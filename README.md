@@ -601,6 +601,8 @@ source .venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
+ou
+python -m pip install -r requirements.txt
 ```
 
 ## 4. Executar
