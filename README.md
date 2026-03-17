@@ -1,305 +1,457 @@
-# WhatsApp Financeiro
 
-Aplicativo desktop em **Python + Tkinter + SQLite** com interface inspirada em chat, focado em **registro e consulta de lançamentos financeiros por linguagem natural**.
+# 💬 WhatsApp Financeiro
 
-O sistema permite registrar gastos e receitas digitando ou falando frases como:
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
+![SQLite](https://img.shields.io/badge/Database-SQLite-green)
+![Tkinter](https://img.shields.io/badge/UI-Tkinter-orange)
+![Status](https://img.shields.io/badge/status-em%20desenvolvimento-yellow)
 
-- `Paguei 35 de gasolina hoje`
-- `Recebi 1200 de salário`
-- `Recebi 900 de aluguel`
-- `Gastei 80 em mercado dia 05/03`
+Aplicativo desktop em **Python + Tkinter + SQLite** com interface inspirada em chat, focado em **registro, consulta, edição, exportação e envio de informações financeiras** usando **linguagem natural**.
 
-Além disso, também permite consultar resumos e listagens por período, categoria e tipo, por exemplo:
+Exemplos:
 
-- `Resumo março`
-- `Resumo semana passada`
-- `Resumo última semana`
-- `Resumo últimos 30 dias`
-- `Listar transferencias`
-- `Listar recebidos março`
-
----
-
-## Visão geral
-
-O **WhatsApp Financeiro** funciona como um mini assistente financeiro local, com:
-
-- interface gráfica estilo conversa
-- persistência local em banco **SQLite**
-- cadastro de lançamentos por texto natural
-- consultas por período
-- categorização automática
-- suporte opcional a voz:
-  - reconhecimento de fala
-  - resposta por voz
-
-Tudo roda localmente, sem necessidade de API externa para persistência.
+```text
+Paguei 35 de gasolina hoje
+Recebi 1200 de salário
+Resumo março
+Listar transferencias
+Editar lancamento 12 valor 89.90
+Exportar resumo pdf
+Enviar relatorio xml para email@dominio.com
+````
 
 ---
 
-## Funcionalidades
+# 🚀 Visão Geral
 
-### 1. Registro de lançamentos por linguagem natural
+O **WhatsApp Financeiro** funciona como um **assistente financeiro local**, com:
 
-O app interpreta frases e salva os dados no banco.
+* interface estilo conversa
+* persistência local em SQLite
+* parser de linguagem natural
+* categorização automática
+* consultas por período
+* edição de lançamentos
+* exportação em XML e PDF
+* envio por email
+* relatórios detalhados
+* suporte opcional a voz
 
-Exemplos aceitos:
+Tudo roda localmente, sem precisar de backend externo para salvar dados.
 
-- `Paguei 35 de gasolina hoje`
-- `Gastei 80 em mercado dia 05/03`
-- `Recebi 40 de pix da Carlinha`
-- `Recebi 2500 de aposentadoria`
-- `Recebi 900 de aluguel`
-- `Paguei 34 de remédios`
-- `Gastei 23 de gasolina dia 21/02`
+---
+
+# ✨ Features
+
+## 🧾 Registro de lançamentos por linguagem natural
+
+O sistema entende frases como:
+
+```text
+Paguei 35 de gasolina hoje
+Gastei 80 em mercado dia 05/03
+Recebi 40 de pix da Carlinha
+Recebi 2500 de aposentadoria
+Recebi 900 de aluguel
+```
 
 Campos extraídos automaticamente:
 
-- data
-- hora
-- descrição
-- valor
-- tipo (`pago` ou `recebido`)
-- categoria
-- mensagem original
+* data
+* hora
+* descrição
+* valor
+* tipo (`pago` ou `recebido`)
+* categoria
+* mensagem original
 
 ---
 
-### 2. Consultas de resumo
+## 📊 Consultas de resumo
 
-O sistema calcula:
+Permite obter:
 
-- total pago
-- total recebido
-- saldo
-- totais por categoria
+* total pago
+* total recebido
+* saldo
+* resumo por categoria
+* período aplicado na consulta
 
 Exemplos:
 
-- `Resumo este mês`
-- `Resumo março`
-- `Resumo fevereiro`
-- `Resumo do ano`
-- `Resumo de ano 2026`
-- `Quanto gastei em fevereiro`
-- `Quanto gastei de combustível mês passado`
+```text
+Resumo este mês
+Resumo março
+Resumo do ano
+Resumo de ano 2026
+Resumo últimos 45 dias
+Resumo última semana
+Resumo semana passada
+```
+
+Exemplo de resposta:
+
+```text
+📊 Resumo última semana:
+Período aplicado: 05/03/2026 a 11/03/2026
+Total pago: R$ 373.00
+Total recebido: R$ 3603.00
+Saldo: R$ 3230.00
+```
 
 ---
 
-### 3. Consultas de listagem
+## 📋 Listagem de lançamentos
 
-O sistema lista os lançamentos individuais filtrados.
+Permite listar lançamentos individuais com filtros.
 
 Exemplos:
 
-- `Listar março`
-- `Listar transferencias`
-- `Listar recebidos março`
-- `Listar pagos fevereiro`
-- `Listar outros`
-- `Listar combustivel`
-- `Listar ano 2024`
-- `Listar ultimos`
+```text
+listar março
+listar transferencias
+listar recebidos março
+listar pagos fevereiro
+listar combustivel
+listar outros
+listar ultimos
+```
 
 ---
 
-### 4. Períodos suportados
+## 🏷️ Categorias dinâmicas
 
-O app consegue interpretar diversos tipos de período.
+Além das categorias padrão, o app permite:
 
-#### Por mês
-- `Resumo março`
-- `Listar fevereiro`
-- `Resumo janeiro de 2026`
+### Listar categorias
 
-#### Por data específica
-- `Quanto gastei dia 23/02`
+```text
+listar categorias
+```
 
-#### Por intervalo de datas
-- `Resumo de 23/02 a 06/03`
-- `Listar de 23 de fevereiro a 6 de março`
-- `Resumo entre 23 de fevereiro e 6 de março`
-- `Resumo do dia 10/01 até 18/02`
+### Criar nova categoria
 
-#### Por intervalo de meses
-- `Resumo de janeiro até março`
-- `Listar de novembro de 2025 até fevereiro de 2026`
+```text
+criar categoria Investimentos
+```
 
-#### Por semana fixa dentro do mês
-- `Resumo primeira semana de janeiro`
-- `Resumo segunda semana de fevereiro`
-- `Listar terceira semana de março`
-- `Resumo última semana de abril`
+### Criar categoria com palavras-chave
 
-#### Períodos relativos por dias
-- `Resumo últimos 7 dias`
-- `Resumo últimos 15 dias`
-- `Resumo últimos 30 dias`
-- `Resumo últimos 45 dias`
-- até `365 dias`
+```text
+criar categoria Curso com palavras curso,udemy,alura
+```
 
-#### Períodos relativos por meses
-- `Resumo últimos 3 meses`
-- `Resumo últimos 6 meses`
-- `Resumo últimos 8 meses`
-- até `12 meses`
+As palavras-chave passam a ser usadas na categorização automática.
 
-#### Semana passada x última semana
-O sistema diferencia:
+---
 
-- `semana passada` = **semana calendário anterior**, de segunda a domingo
-- `última semana` = **últimos 7 dias reais**
+## ✏️ Edição de lançamentos
+
+O sistema permite alterar lançamentos já salvos.
+
+Exemplos:
+
+```text
+editar lancamento 12 valor 89.90
+editar lancamento 12 descricao gasolina aditivada
+editar lancamento 12 categoria Mercado
+editar lancamento 12 tipo recebido
+editar lancamento 12 data 2026-03-05
+```
+
+Campos editáveis:
+
+* valor
+* descrição
+* categoria
+* tipo
+* data
+
+---
+
+## 📑 Relatórios completos
+
+Além do resumo simples, o app pode gerar um **relatório mais completo** para um período ou filtro.
+
+Exemplos:
+
+```text
+relatorio março
+relatorio últimos 30 dias
+relatorio combustivel últimos 30 dias
+relatorio de janeiro até março
+```
+
+O relatório inclui:
+
+* período usado
+* total de lançamentos
+* total pago
+* total recebido
+* saldo
+* resumo por categoria
+* amostra/listagem de lançamentos
+
+---
+
+## 📤 Exportação em XML e PDF
+
+O app consegue salvar o último resumo ou relatório gerado em arquivo.
+
+### Exportar resumo
+
+```text
+exportar resumo pdf
+exportar resumo xml
+```
+
+### Exportar relatório
+
+```text
+exportar relatorio pdf
+exportar relatorio xml
+```
+
+Arquivos são salvos na pasta:
+
+```text
+exports/
+```
+
+---
+
+## 📧 Envio por email
+
+Também é possível enviar por email o arquivo exportado.
+
+### Enviar resumo
+
+```text
+enviar resumo pdf para email@dominio.com
+enviar resumo xml para email@dominio.com
+```
+
+### Enviar relatório
+
+```text
+enviar relatorio pdf para email@dominio.com
+enviar relatorio xml para email@dominio.com
+```
+
+---
+
+## 📘 Ajuda melhorada
+
+Agora o app possui ajuda organizada por tópico.
+
+### Ajuda geral
+
+```text
+ajuda
+```
+
+### Ajuda por assunto
+
+```text
+ajuda categorias
+ajuda editar
+ajuda resumo
+ajuda listar
+ajuda relatorio
+ajuda exportar
+ajuda email
+```
+
+### Buscar ajuda
+
+```text
+buscar ajuda resumo
+buscar ajuda categoria
+buscar ajuda email
+```
+
+---
+
+# 📆 Períodos suportados
+
+O parser entende diversos formatos de período.
+
+## Por mês
+
+```text
+Resumo março
+Listar fevereiro
+Resumo janeiro de 2026
+```
+
+## Por data específica
+
+```text
+Quanto gastei dia 23/02
+```
+
+## Intervalo de datas
+
+```text
+Resumo de 23/02 a 06/03
+Listar de 23 de fevereiro a 6 de março
+Resumo entre 23 de fevereiro e 6 de março
+Resumo do dia 10/01 até 18/02
+```
+
+## Intervalo de meses
+
+```text
+Resumo de janeiro até março
+Listar de novembro de 2025 até fevereiro de 2026
+```
+
+## Semana fixa dentro do mês
+
+```text
+Resumo primeira semana de janeiro
+Resumo segunda semana de fevereiro
+Listar terceira semana de março
+Resumo última semana de abril
+```
+
+## Períodos relativos por dias
+
+```text
+Resumo últimos 7 dias
+Resumo últimos 15 dias
+Resumo últimos 30 dias
+Resumo últimos 45 dias
+```
+
+Até:
+
+* `365 dias`
+
+## Períodos relativos por meses
+
+```text
+Resumo últimos 3 meses
+Resumo últimos 6 meses
+Resumo últimos 8 meses
+Resumo últimos 12 meses
+```
+
+## Ano
+
+```text
+Resumo do ano
+Resumo de ano 2025
+Listar ano 2024
+```
+
+---
+
+# 🗓️ Regras de semana
+
+O sistema diferencia dois conceitos:
+
+## Semana passada
+
+Semana calendário anterior:
+
+* segunda-feira até domingo da semana anterior
+
+## Última semana
+
+Últimos 7 dias reais, contando a partir de hoje.
 
 Exemplo:
-- se hoje for `11/03/2026`
-- `semana passada` = `02/03/2026 a 08/03/2026`
-- `última semana` = `05/03/2026 a 11/03/2026`
+
+* `semana passada` = bloco fechado da semana anterior
+* `última semana` = janela móvel de 7 dias
 
 ---
 
-### 5. Categorização automática
+# 🧠 Categorização automática
 
-O app tenta classificar automaticamente os lançamentos com base em palavras-chave.
+Categorias padrão:
 
-Categorias atuais:
+* Combustível
+* Transferências
+* Mercado
+* Contas
+* Renda
+* Saúde
+* Alimentação
+* Transporte
+* Outros
 
-- **Combustível**
-- **Transferências**
-- **Mercado**
-- **Contas**
-- **Renda**
-- **Saúde**
-- **Alimentação**
-- **Transporte**
-- **Outros**
+## Exemplos de classificação
 
-#### Exemplos de classificação
+| Palavra-chave | Categoria      |
+| ------------- | -------------- |
+| gasolina      | Combustível    |
+| pix           | Transferências |
+| salário       | Renda          |
+| aluguel       | Renda          |
+| aposentadoria | Renda          |
+| remédio       | Saúde          |
+| mercado       | Mercado        |
+| uber          | Transporte     |
 
-##### Combustível
-- gasolina
-- combustível
-- diesel
-- etanol
-- álcool
+Se nenhuma regra for encontrada, o lançamento vai para:
 
-##### Transferências
-- pix
-- transferência
-- transferências
-
-##### Renda
-- salário
-- freela
-- aposentadoria
-- aluguel
-
-##### Saúde
-- farmácia
-- remédio
-- remédios
-- médico
-
-##### Alimentação
-- restaurante
-- lanche
-- ifood
-- padaria
-
-##### Transporte
-- uber
-- 99
-- ônibus
-
-##### Contas
-- água
-- luz
-- energia
-- internet
-
-##### Mercado
-- mercado
-- supermercado
-
-Caso nenhuma regra seja encontrada, o lançamento vai para:
-
-- **Outros**
+* `Outros`
 
 ---
 
-### 6. Correção automática de registros antigos
-
-O projeto possui rotina para corrigir registros antigos com descrições ruins, como por exemplo:
-
-- `gasolinadia/`
-- `pagueide remedios`
-- `de gasolina dia/`
-
-Comando disponível:
-
-- `corrigir lancamentos`
-
-Também existe correção automática na inicialização para registros detectados como “sujos”.
-
----
-
-### 7. Exibição do período aplicado
-
-Nas consultas, o app mostra o intervalo real usado no filtro.
-
-Exemplo:
-
-- `Período aplicado: 02/03/2026 a 08/03/2026`
-
-Isso ajuda a validar exatamente qual janela temporal foi usada na consulta.
-
----
-
-### 8. Interface com voz
+# 🎤 Suporte a voz
 
 O app pode:
 
-- reconhecer áudio do microfone
-- transformar fala em texto
-- processar o texto reconhecido
-- responder com síntese de voz
+* reconhecer áudio do microfone
+* transformar fala em texto
+* responder com síntese de voz
 
-Recursos usados:
-- `speech_recognition`
-- `pyttsx3`
+Bibliotecas usadas:
 
-Se microfone ou TTS não estiverem disponíveis, o app continua funcionando com texto.
+* `SpeechRecognition`
+* `pyttsx3`
+
+Se microfone ou TTS não estiverem disponíveis, o app continua funcionando por texto.
 
 ---
 
-## Interface
+# 🖥 Interface
 
-A interface foi construída em **Tkinter**, com visual inspirado em aplicativos de mensagens.
+Interface construída em **Tkinter**, com visual inspirado em aplicativos de mensagens.
 
 Características:
 
-- layout tipo chat
-- cabeçalho estilo WhatsApp
-- campo de mensagem
-- botão de envio/extração
-- botão de consulta
-- botão de microfone
-- área com histórico da conversa
+* cabeçalho estilo chat
+* histórico da conversa
+* campo de mensagem
+* botão de microfone
+* botão de consulta
+* mensagens organizadas por remetente
 
-Configuração atual da janela:
+Dimensão atual:
 
-- **380x660**
+```text
+380x660
+```
 
 ---
 
-## Estrutura do banco de dados
+# 🗄 Banco de Dados
 
-O banco usado é **SQLite**, armazenado em:
+Banco local **SQLite**.
+
+Arquivo principal:
 
 ```text
 financeiro.db
-````
+```
 
-### Tabela principal: `lancamentos`
+---
+
+## Tabela `lancamentos`
 
 ```sql
 CREATE TABLE IF NOT EXISTS lancamentos (
@@ -312,109 +464,146 @@ CREATE TABLE IF NOT EXISTS lancamentos (
     categoria TEXT NOT NULL,
     mensagem_original TEXT,
     data_hora_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
+);
 ```
 
 ### Campos
 
-| Campo                | Tipo      | Descrição                         |
-| -------------------- | --------- | --------------------------------- |
-| `id`                 | INTEGER   | Identificador do lançamento       |
-| `data`               | TEXT      | Data do lançamento (`YYYY-MM-DD`) |
-| `hora`               | TEXT      | Hora do lançamento                |
-| `descricao`          | TEXT      | Descrição limpa/extraída          |
-| `valor`              | REAL      | Valor monetário                   |
-| `tipo`               | TEXT      | `pago` ou `recebido`              |
-| `categoria`          | TEXT      | Categoria classificada            |
-| `mensagem_original`  | TEXT      | Frase original digitada/falada    |
-| `data_hora_registro` | TIMESTAMP | Momento em que foi salvo no banco |
-
-### Índices criados
-
-* `idx_lancamentos_data`
-* `idx_lancamentos_categoria`
-* `idx_lancamentos_tipo`
-* `idx_lancamentos_descricao`
-
-Esses índices ajudam a melhorar a performance das consultas.
+| Campo                | Tipo      | Descrição                   |
+| -------------------- | --------- | --------------------------- |
+| `id`                 | INTEGER   | identificador do lançamento |
+| `data`               | TEXT      | data do lançamento          |
+| `hora`               | TEXT      | hora do lançamento          |
+| `descricao`          | TEXT      | descrição limpa             |
+| `valor`              | REAL      | valor monetário             |
+| `tipo`               | TEXT      | `pago` ou `recebido`        |
+| `categoria`          | TEXT      | categoria do lançamento     |
+| `mensagem_original`  | TEXT      | frase original enviada      |
+| `data_hora_registro` | TIMESTAMP | momento do salvamento       |
 
 ---
 
-## Dependências
+## Tabela `categorias`
 
-### Biblioteca padrão do Python
+```sql
+CREATE TABLE IF NOT EXISTS categorias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome TEXT NOT NULL UNIQUE,
+    palavras_chave TEXT,
+    criada_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
 
-Estas já vêm com o Python:
+### Campos
+
+| Campo            | Tipo      | Descrição                  |
+| ---------------- | --------- | -------------------------- |
+| `id`             | INTEGER   | identificador da categoria |
+| `nome`           | TEXT      | nome da categoria          |
+| `palavras_chave` | TEXT      | palavras-chave associadas  |
+| `criada_em`      | TIMESTAMP | data de criação            |
+
+---
+
+## Índices criados
+
+```text
+idx_lancamentos_data
+idx_lancamentos_categoria
+idx_lancamentos_tipo
+idx_lancamentos_descricao
+```
+
+---
+
+# 📁 Estrutura sugerida do projeto
+
+```text
+whatsapp-financeiro/
+│
+├── app.py
+├── financeiro.db
+├── exports/
+│   ├── resumo_*.pdf
+│   ├── resumo_*.xml
+│   ├── relatorio_*.pdf
+│   └── relatorio_*.xml
+├── requirements.txt
+└── README.md
+```
+
+---
+
+# 🛠 Dependências
+
+## Bibliotecas padrão do Python
 
 * `sqlite3`
 * `re`
+* `os`
+* `smtplib`
 * `unicodedata`
+* `calendar`
 * `pathlib`
 * `datetime`
-* `calendar`
-* `tkinter`
 * `threading`
+* `xml.etree.ElementTree`
+* `email.message`
 
-### Dependências externas
+## Dependências externas
 
-Instale com:
+Instalação direta:
 
 ```bash
-pip install SpeechRecognition python-dateutil pyttsx3 pyaudio
+pip install SpeechRecognition python-dateutil pyttsx3 pyaudio reportlab
 ```
-
-#### Pacotes usados
-
-* `SpeechRecognition`
-* `python-dateutil`
-* `pyttsx3`
-* `PyAudio`
-
-> Observação: em alguns ambientes o `PyAudio` pode ser o pacote mais trabalhoso de instalar.
 
 ---
 
-## Requisitos
+## `requirements.txt`
 
-* Python 3.10+ recomendado
-* Sistema com suporte a Tkinter
-* Microfone disponível para uso de voz
-* Ambiente local com permissão para criar arquivo SQLite
+```txt
+SpeechRecognition
+python-dateutil
+pyttsx3
+PyAudio
+reportlab
+```
 
 ---
 
-## Como executar
+# ▶️ Como executar
 
-### 1. Clonar o projeto
+## 1. Clonar o repositório
 
 ```bash
-git clone <URL_DO_REPOSITORIO>
-cd <NOME_DO_REPOSITORIO>
+git clone https://github.com/seu-usuario/whatsapp-financeiro.git
+cd whatsapp-financeiro
 ```
 
-### 2. Criar ambiente virtual
+## 2. Criar ambiente virtual
 
-#### Windows
+### Windows
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
-#### Linux/macOS
+### Linux/macOS
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Instalar dependências
+## 3. Instalar dependências
 
 ```bash
-pip install SpeechRecognition python-dateutil pyttsx3 pyaudio
+pip install -r requirements.txt
 ```
 
-### 4. Executar
+## 4. Executar
 
 ```bash
 python app.py
@@ -422,148 +611,118 @@ python app.py
 
 ---
 
-## Exemplos de uso
+# ⚙️ Configuração de email
 
-### Lançamentos
+Para envio de email, configure estas variáveis de ambiente.
+
+## Windows PowerShell
+
+```powershell
+$env:SMTP_HOST="smtp.gmail.com"
+$env:SMTP_PORT="587"
+$env:SMTP_USER="seu_email@gmail.com"
+$env:SMTP_PASS="sua_senha_ou_app_password"
+$env:SMTP_FROM="seu_email@gmail.com"
+```
+
+## Variáveis necessárias
+
+* `SMTP_HOST`
+* `SMTP_PORT`
+* `SMTP_USER`
+* `SMTP_PASS`
+* `SMTP_FROM`
+
+---
+
+# 🧪 Exemplos de comandos
+
+## Lançamentos
 
 ```text
 Paguei 35 de gasolina hoje
 Gastei 80 em mercado dia 05/03
 Recebi 40 de pix da Carlinha
-Recebi 1200 de salário
 Recebi 2500 de aposentadoria
 Recebi 900 de aluguel
 ```
 
-### Resumos
+## Resumos
 
 ```text
-Resumo este mês
 Resumo março
 Resumo do ano
-Resumo de ano 2026
-Resumo últimos 7 dias
-Resumo última semana
+Resumo últimos 30 dias
 Resumo semana passada
-Resumo primeiros dias de janeiro
-Resumo de 23/02 a 06/03
+Resumo última semana
 Resumo de janeiro até março
 ```
 
-### Listagens
+## Listagens
 
 ```text
-Listar março
-Listar transferencias
-Listar recebidos março
-Listar pagos fevereiro
-Listar combustivel
-Listar outros
-Listar últimos 15 dias
-Listar ano 2024
-Listar ultimos
+listar março
+listar transferencias
+listar pagos fevereiro
+listar recebidos março
+listar outros
+listar ultimos
 ```
 
-### Utilitários
+## Categorias
+
+```text
+listar categorias
+criar categoria Investimentos
+criar categoria Curso com palavras curso,udemy,alura
+```
+
+## Edição
+
+```text
+editar lancamento 12 valor 89.90
+editar lancamento 12 descricao gasolina aditivada
+editar lancamento 12 categoria Mercado
+editar lancamento 12 tipo recebido
+editar lancamento 12 data 2026-03-05
+```
+
+## Relatórios
+
+```text
+relatorio março
+relatorio últimos 30 dias
+relatorio combustivel últimos 30 dias
+relatorio de janeiro até março
+```
+
+## Exportação
+
+```text
+exportar resumo pdf
+exportar resumo xml
+exportar relatorio pdf
+exportar relatorio xml
+```
+
+## Email
+
+```text
+enviar resumo pdf para email@dominio.com
+enviar resumo xml para email@dominio.com
+enviar relatorio pdf para email@dominio.com
+enviar relatorio xml para email@dominio.com
+```
+
+## Ajuda
 
 ```text
 ajuda
-corrigir lancamentos
-```
-
----
-
-## Comandos principais
-
-| Comando                | Função                                              |
-| ---------------------- | --------------------------------------------------- |
-| `ajuda`                | Mostra comandos disponíveis                         |
-| `listar ultimos`       | Lista os últimos lançamentos salvos                 |
-| `corrigir lancamentos` | Corrige descrições/categorias antigas problemáticas |
-| `resumo ...`           | Exibe resumo agregado                               |
-| `listar ...`           | Exibe lançamentos individuais                       |
-
----
-
-## Como o app decide se a frase é lançamento ou consulta
-
-### Lançamento
-
-Se detectar:
-
-* verbo de ação financeira (`paguei`, `gastei`, `recebi`, etc.)
-* valor numérico
-
-então a frase tende a ser tratada como **novo lançamento**.
-
-### Consulta
-
-Se detectar palavras como:
-
-* `resumo`
-* `listar`
-* `quanto`
-* `qual`
-* `últimos`
-* `semana passada`
-* `nomes de mês`
-* `ano`
-* `intervalos`
-
-então tende a ser tratada como **consulta**.
-
----
-
-## Regras de negócio importantes
-
-### `semana passada`
-
-Refere-se à **semana calendário anterior**, de segunda a domingo.
-
-### `última semana`
-
-Refere-se aos **últimos 7 dias reais**, contando a partir da data atual.
-
-### `aluguel` e `aposentadoria`
-
-Atualmente são classificados como:
-
-* **tipo**: `recebido` quando a frase indicar entrada
-* **categoria**: `Renda`
-
----
-
-## Limitações atuais
-
-* parser baseado em regras e expressões regulares
-* ainda não possui edição/exclusão por chat
-* ainda não possui exportação para Excel/PDF
-* categorização depende de palavras-chave conhecidas
-* frases muito ambíguas podem cair em `Outros`
-* funcionamento de voz depende de microfone e bibliotecas do sistema
-
----
-
-
-## Estrutura do projeto
-
-```text
-whatsapp-financeiro/
-├── app.py
-├── financeiro.db
-├── README.md
-└── requirements.txt
-```
-
----
-
-## Exemplo de `requirements.txt`
-
-```txt
-SpeechRecognition
-python-dateutil
-pyttsx3
-PyAudio
+ajuda categorias
+ajuda editar
+ajuda relatorio
+buscar ajuda resumo
+buscar ajuda email
 ```
 
 ---
