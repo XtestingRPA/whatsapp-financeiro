@@ -3,3 +3,5 @@ python-dateutil
 pyttsx3
 PyAudio
 reportlab
+python-telegram-bot
+python-dotenv
