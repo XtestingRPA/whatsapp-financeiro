@@ -1,6 +1,4 @@
-SpeechRecognition
 python-dateutil
-pyttsx3
 reportlab
 python-telegram-bot
 python-dotenv
