@@ -40,6 +40,33 @@ Isso prepara o sistema para futuros canais, como:
 
 ---
 
+## Deploy atual
+
+O bot Telegram está rodando via webhook em um Web Service no Render.
+
+### Stack atual de produção
+- Telegram Bot API
+- FastAPI
+- python-telegram-bot
+- Render Web Service
+- Render Postgres
+
+### Persistência
+Os dados dos usuários são armazenados em banco PostgreSQL via `DATABASE_URL`.
+
+### Isolamento por usuário
+Os lançamentos são separados por:
+- canal
+- usuario_id
+- chat_id
+
+Isso permite que cada usuário veja apenas seus próprios dados.
+
+### Bot provisório no Telegram
+http://t.me/FinancesXTG_bot
+
+---
+
 # ✨ Funcionalidades
 
 ## 🧾 Registro de lançamentos

@@ -1,0 +1,8 @@
+python-dateutil
+reportlab
+python-telegram-bot[webhooks]>=22.0
+python-dotenv
+fastapi
+uvicorn[standard]
+psycopg[binary]
+resend

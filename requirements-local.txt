@@ -1,0 +1,6 @@
+python-dateutil
+reportlab
+SpeechRecognition
+pyttsx3
+PyAudio
+python-dotenv

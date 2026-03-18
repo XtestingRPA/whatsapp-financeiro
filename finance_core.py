@@ -4,14 +4,14 @@ import os
 import re
 import json
 import sqlite3
-import smtplib
+
 import unicodedata
 import calendar
 from pathlib import Path
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from xml.etree.ElementTree import Element, SubElement, ElementTree
-from email.message import EmailMessage
+from email_provider import ResendEmailProvider
 from typing import Optional, List, Any
 
 from dateutil.relativedelta import relativedelta
@@ -1406,31 +1406,8 @@ class FinanceCore:
             return CoreResponse(f"Erro ao exportar arquivo: {e}")
 
     def send_email_with_attachment(self, to_email, subject, body, attachment_path):
-        host = os.getenv("SMTP_HOST")
-        port = os.getenv("SMTP_PORT")
-        user = os.getenv("SMTP_USER")
-        password = os.getenv("SMTP_PASS")
-        from_email = os.getenv("SMTP_FROM", user)
-
-        if not all([host, port, user, password, from_email]):
-            raise RuntimeError("Configuração SMTP incompleta.")
-
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = to_email
-        msg.set_content(body)
-
-        with open(attachment_path, "rb") as f:
-            data = f.read()
-
-        subtype = "pdf" if attachment_path.suffix.lower() == ".pdf" else "xml"
-        msg.add_attachment(data, maintype="application", subtype=subtype, filename=attachment_path.name)
-
-        with smtplib.SMTP(host, int(port)) as server:
-            server.starttls()
-            server.login(user, password)
-            server.send_message(msg)
+        provider = ResendEmailProvider()
+        return provider.send_email_with_attachment(to_email=to_email, subject=subject, body_text=body, attachment_path=attachment_path)
 
     def try_export_or_email_command(self, user: UserContext, message):
         msg_norm = self.normalize_text(message)
@@ -1455,10 +1432,17 @@ class FinanceCore:
                 path = exported.file_paths[0]
                 subject = f"{kind.capitalize()} financeiro"
                 body = "Segue em anexo o arquivo solicitado."
-                self.send_email_with_attachment(to_email, subject, body, path)
+                result = self.send_email_with_attachment(to_email, subject, body, path)
+
+                email_id = None
+                if isinstance(result, dict):
+                    email_id = result.get("id")
+
+                if email_id:
+                    return CoreResponse(f"✅ Email enviado para {to_email}. ID: {email_id}")
                 return CoreResponse(f"✅ Email enviado para {to_email}.")
             except Exception as e:
-                return CoreResponse(f"Erro ao enviar email: {e}")
+                return CoreResponse(f"Erro ao enviar email via Resend: {e}")
 
         return None
 
