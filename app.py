@@ -7,7 +7,7 @@ from threading import Thread
 import speech_recognition as sr
 import pyttsx3
 
-from finance_core import FinanceCore
+from finance_core import FinanceCore, UserContext
 
 
 class WhatsAppFinanceiroApp:
@@ -19,6 +19,7 @@ class WhatsAppFinanceiroApp:
         self.root.resizable(False, False)
 
         self.core = FinanceCore()
+        self.user_context = UserContext(canal="local", usuario_id="desktop_user", chat_id="desktop_chat")
         self.placeholder_text = "Mensagem"
 
         self.recognizer = sr.Recognizer()
@@ -55,7 +56,6 @@ class WhatsAppFinanceiroApp:
 
         title_frame = tk.Frame(header, bg="#0b6b63")
         title_frame.pack(side=tk.LEFT, padx=8, pady=10)
-
         tk.Label(title_frame, text="WhatsApp Financeiro", bg="#0b6b63", fg="white", font=("Arial", 11, "bold")).pack(anchor="w")
         tk.Label(title_frame, text="Online", bg="#0b6b63", fg="white", font=("Arial", 8)).pack(anchor="w")
 
@@ -150,7 +150,7 @@ class WhatsAppFinanceiroApp:
             self.message_entry.delete(0, tk.END)
             self.restore_placeholder()
 
-            response = self.core.process_message(message)
+            response = self.core.process_message(message, user=self.user_context)
             if response.file_paths:
                 nomes = ", ".join([p.name for p in response.file_paths])
                 self.add_message("sistema", f"{response.text}\nArquivos gerados: {nomes}")
@@ -185,7 +185,7 @@ class WhatsAppFinanceiroApp:
             self.add_message("erro", error)
         elif text:
             self.add_message("usuario", f"🎤 {text}")
-            response = self.core.process_message(text)
+            response = self.core.process_message(text, user=self.user_context)
             self.add_message("sistema", response.text)
 
     def run(self):

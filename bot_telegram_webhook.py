@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from fastapi import FastAPI, Request, Response
+from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
@@ -28,8 +31,11 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 ALLOWED_CHAT_IDS_RAW = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+WEBHOOK_SECRET_PATH = os.getenv("WEBHOOK_SECRET_PATH", "telegram").strip()
 
 bridge = TelegramFinanceBridge()
+telegram_app: Application | None = None
 
 
 def get_allowed_chat_ids() -> set[int]:
@@ -60,6 +66,9 @@ def is_chat_allowed(chat_id: int) -> bool:
 # =========================================================
 # MENUS
 # =========================================================
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+
 def build_main_menu() -> InlineKeyboardMarkup:
     keyboard = [
         [
@@ -157,77 +166,36 @@ def build_email_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-# =========================================================
-# DECISÃO DE MENU CONTEXTUAL
-# =========================================================
 def choose_reply_markup(source_text: str, response_text: str) -> InlineKeyboardMarkup | None:
     src = (source_text or "").strip().lower()
     resp = (response_text or "").strip().lower()
 
-    # Nunca mostrar menu pós-resposta para comandos iniciais
     if src in {"/start", "/comandos", "/ajuda"}:
         return None
 
-    # Resumo
-    if (
-        src.startswith("/resumo")
-        or "resumo " in src
-        or resp.startswith("📊 resumo".lower())
-    ):
+    if src.startswith("/resumo") or "resumo " in src or resp.startswith("📊 resumo".lower()):
         return build_summary_menu()
 
-    # Relatório
-    if (
-        src.startswith("/relatorio")
-        or src.startswith("/relatório")
-        or "relatorio" in src
-        or "relatório" in src
-        or resp.startswith("📑 relatório".lower())
-    ):
+    if src.startswith("/relatorio") or src.startswith("/relatório") or "relatorio" in src or "relatório" in src or resp.startswith("📑 relatório".lower()):
         return build_report_menu()
 
-    # Listagens
-    if (
-        src.startswith("/ultimos")
-        or src.startswith("listar ")
-        or src == "listar ultimos"
-        or resp.startswith("📋 lançamentos".lower())
-        or resp.startswith("📁 últimos lançamentos".lower())
-    ):
+    if src.startswith("/ultimos") or src.startswith("listar ") or src == "listar ultimos" or resp.startswith("📋 lançamentos".lower()) or resp.startswith("📁 últimos lançamentos".lower()):
         return build_list_menu()
 
-    # Categorias
-    if (
-        src.startswith("/categorias")
-        or src == "listar categorias"
-        or resp.startswith("🏷️ categorias".lower())
-    ):
+    if src.startswith("/categorias") or src == "listar categorias" or resp.startswith("🏷️ categorias".lower()):
         return build_categories_menu()
 
-    # Email
     if "email" in src or "smtp" in resp:
         return build_email_menu()
 
     return None
 
 
-# =========================================================
-# ENVIO DE RESPOSTA
-# =========================================================
-async def send_core_response(
-    chat_id: int,
-    context: ContextTypes.DEFAULT_TYPE,
-    response,
-    source_text: str = "",
-) -> None:
+async def send_core_response(chat_id: int, context: ContextTypes.DEFAULT_TYPE, response, source_text: str = "") -> None:
     reply_markup = choose_reply_markup(source_text, response.text)
 
     if response.text:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=response.text,
-            reply_markup=reply_markup,
-        )
+        await context.bot.send_message(chat_id=chat_id, text=response.text, reply_markup=reply_markup)
 
     for file_path in response.file_paths:
         if not file_path.exists():
@@ -239,7 +207,7 @@ async def send_core_response(
 
 
 # =========================================================
-# COMANDOS
+# HANDLERS
 # =========================================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
@@ -252,18 +220,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     response = bridge.handle_text("/start", chat_id=chat_id)
     await send_core_response(chat_id, context, response, source_text="/start")
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="Escolha uma ação rápida:",
-        reply_markup=build_main_menu(),
-    )
+    await context.bot.send_message(chat_id=chat_id, text="Escolha uma ação rápida:", reply_markup=build_main_menu())
 
 
 async def ajuda_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
         return
-
     chat_id = update.effective_chat.id
     if not is_chat_allowed(chat_id):
         await context.bot.send_message(chat_id=chat_id, text="Acesso não autorizado.")
@@ -276,7 +238,6 @@ async def ajuda_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def comandos_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
         return
-
     chat_id = update.effective_chat.id
     if not is_chat_allowed(chat_id):
         await context.bot.send_message(chat_id=chat_id, text="Acesso não autorizado.")
@@ -299,12 +260,7 @@ async def comandos_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "• Exportar resumo pdf\n"
         "• Relatorio últimos 30 dias"
     )
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=build_main_menu(),
-    )
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=build_main_menu())
 
 
 async def resumo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -369,27 +325,18 @@ async def emailconfig_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     text = (
         "⚙️ Configuração de email\n\n"
-        "Defina estas variáveis de ambiente antes de usar envio por email:\n\n"
-        "SMTP_HOST\n"
-        "SMTP_PORT\n"
-        "SMTP_USER\n"
-        "SMTP_PASS\n"
-        "SMTP_FROM\n\n"
-        "Exemplo no PowerShell:\n"
-        "$env:SMTP_HOST=\"smtp.gmail.com\"\n"
-        "$env:SMTP_PORT=\"587\"\n"
-        "$env:SMTP_USER=\"seu_email@gmail.com\"\n"
-        "$env:SMTP_PASS=\"sua_senha_ou_app_password\"\n"
-        "$env:SMTP_FROM=\"seu_email@gmail.com\"\n\n"
-        "Depois disso, use:\n"
+        "Defina estas variáveis de ambiente:\n\n"
+        "SMTP_HOST\nSMTP_PORT\nSMTP_USER\nSMTP_PASS\nSMTP_FROM\n\n"
+        "Exemplo:\n"
+        "SMTP_HOST=smtp.gmail.com\n"
+        "SMTP_PORT=587\n"
+        "SMTP_USER=seu_email@gmail.com\n"
+        "SMTP_PASS=sua_app_password\n"
+        "SMTP_FROM=seu_email@gmail.com\n\n"
+        "Depois use:\n"
         "enviar resumo pdf para email@dominio.com"
     )
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=build_email_menu(),
-    )
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=build_email_menu())
 
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -399,9 +346,6 @@ async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await context.bot.send_message(chat_id=chat_id, text=f"Seu chat_id: {chat_id}")
 
 
-# =========================================================
-# CALLBACKS - MENU INICIAL
-# =========================================================
 async def quick_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.callback_query is None or update.effective_chat is None:
         return
@@ -436,9 +380,6 @@ async def quick_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await send_core_response(chat_id, context, response, source_text=text)
 
 
-# =========================================================
-# CALLBACKS - MENUS CONTEXTUAIS
-# =========================================================
 async def post_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.callback_query is None or update.effective_chat is None:
         return
@@ -484,9 +425,6 @@ async def post_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_core_response(chat_id, context, response, source_text=text)
 
 
-# =========================================================
-# MENSAGENS LIVRES
-# =========================================================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None or update.effective_message is None:
         return
@@ -507,35 +445,75 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await send_core_response(chat_id, context, response, source_text=text)
     except Exception as exc:
         logger.exception("Erro ao processar mensagem do Telegram")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"Erro interno ao processar a mensagem: {exc}"
-        )
+        await context.bot.send_message(chat_id=chat_id, text=f"Erro interno ao processar a mensagem: {exc}")
 
 
-def main() -> None:
+# =========================================================
+# FASTAPI + WEBHOOK
+# =========================================================
+def build_application() -> Application:
     if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("Defina TELEGRAM_BOT_TOKEN antes de executar o bot.")
+        raise RuntimeError("Defina TELEGRAM_BOT_TOKEN antes de executar.")
 
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("ajuda", ajuda_command))
-    app.add_handler(CommandHandler("comandos", comandos_command))
-    app.add_handler(CommandHandler("resumo", resumo_command))
-    app.add_handler(CommandHandler("ultimos", ultimos_command))
-    app.add_handler(CommandHandler("categorias", categorias_command))
-    app.add_handler(CommandHandler("relatorio", relatorio_command))
-    app.add_handler(CommandHandler("emailconfig", emailconfig_command))
-    app.add_handler(CommandHandler("id", id_command))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("ajuda", ajuda_command))
+    application.add_handler(CommandHandler("comandos", comandos_command))
+    application.add_handler(CommandHandler("resumo", resumo_command))
+    application.add_handler(CommandHandler("ultimos", ultimos_command))
+    application.add_handler(CommandHandler("categorias", categorias_command))
+    application.add_handler(CommandHandler("relatorio", relatorio_command))
+    application.add_handler(CommandHandler("emailconfig", emailconfig_command))
+    application.add_handler(CommandHandler("id", id_command))
 
-    app.add_handler(CallbackQueryHandler(quick_action_handler, pattern=r"^quick:"))
-    app.add_handler(CallbackQueryHandler(post_action_handler, pattern=r"^post:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    application.add_handler(CallbackQueryHandler(quick_action_handler, pattern=r"^quick:"))
+    application.add_handler(CallbackQueryHandler(post_action_handler, pattern=r"^post:"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    logger.info("Bot do Telegram iniciado em long polling.")
-    app.run_polling(drop_pending_updates=True)
+    return application
 
 
-if __name__ == "__main__":
-    main()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global telegram_app
+
+    telegram_app = build_application()
+    await telegram_app.initialize()
+    await telegram_app.start()
+
+    if not RENDER_EXTERNAL_URL:
+        raise RuntimeError("Defina RENDER_EXTERNAL_URL com a URL pública do Render.")
+
+    webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/webhook/{WEBHOOK_SECRET_PATH}"
+    await telegram_app.bot.set_webhook(url=webhook_url)
+    logger.info("Webhook configurado em %s", webhook_url)
+
+    yield
+
+    if telegram_app:
+        await telegram_app.bot.delete_webhook(drop_pending_updates=False)
+        await telegram_app.stop()
+        await telegram_app.shutdown()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/")
+async def healthcheck():
+    return {"status": "ok", "service": "telegram-bot-webhook"}
+
+
+@app.post("/webhook/{secret_path}")
+async def telegram_webhook(secret_path: str, request: Request):
+    if secret_path != WEBHOOK_SECRET_PATH:
+        return Response(status_code=403)
+
+    if telegram_app is None:
+        return Response(status_code=503)
+
+    data = await request.json()
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return Response(status_code=200)

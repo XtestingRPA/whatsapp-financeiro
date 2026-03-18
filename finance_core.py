@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import sqlite3
 import smtplib
 import unicodedata
@@ -11,9 +12,15 @@ from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from xml.etree.ElementTree import Element, SubElement, ElementTree
 from email.message import EmailMessage
-from typing import Optional, List
+from typing import Optional, List, Any
 
 from dateutil.relativedelta import relativedelta
+
+try:
+    import psycopg
+    PSYCOPG_OK = True
+except Exception:
+    PSYCOPG_OK = False
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -21,6 +28,13 @@ try:
     REPORTLAB_OK = True
 except Exception:
     REPORTLAB_OK = False
+
+
+@dataclass
+class UserContext:
+    canal: str = "local"
+    usuario_id: str = "default_user"
+    chat_id: str = "default_chat"
 
 
 @dataclass
@@ -32,12 +46,17 @@ class CoreResponse:
 class FinanceCore:
     def __init__(self, base_dir: Optional[Path] = None, db_name: str = "financeiro.db"):
         self.base_dir = Path(base_dir or Path(__file__).resolve().parent)
-        self.db_path = self.base_dir / db_name
         self.export_dir = self.base_dir / "exports"
         self.export_dir.mkdir(exist_ok=True)
 
+        self.database_url = os.getenv("DATABASE_URL", "").strip()
+        self.using_postgres = bool(self.database_url)
+
+        self.sqlite_path = self.base_dir / db_name
+        self.conn = None
+
         self.show_period_debug = True
-        self.last_query_context = None
+        self.last_query_context_by_user: dict[str, dict] = {}
 
         self.meses = {
             "janeiro": 1,
@@ -173,39 +192,69 @@ class FinanceCore:
             ],
         }
 
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.init_database()
+        self._init_db()
         self.load_category_maps()
         self.auto_fix_dirty_records_on_startup()
 
     # =========================================================
-    # utilidades
+    # DB LAYER
     # =========================================================
-    def normalize_text(self, text):
-        if text is None:
-            return ""
-        text = str(text).strip().lower()
-        text = unicodedata.normalize("NFD", text)
-        text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
+    def _init_db(self):
+        if self.using_postgres:
+            if not PSYCOPG_OK:
+                raise RuntimeError("DATABASE_URL definido, mas psycopg não está instalado.")
+            self._init_postgres()
+        else:
+            self._init_sqlite()
 
-    def format_date_br(self, dt):
-        return dt.strftime("%d/%m/%Y")
+    def _init_sqlite(self):
+        self.conn = sqlite3.connect(str(self.sqlite_path), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._create_schema_sqlite()
+        self.seed_default_categories()
 
-    def period_debug_text(self, start_date, end_date):
-        return f"Período aplicado: {self.format_date_br(start_date)} a {self.format_date_br(end_date)}"
+    def _init_postgres(self):
+        self._create_schema_postgres()
+        self.seed_default_categories()
 
-    # =========================================================
-    # banco
-    # =========================================================
-    def init_database(self):
+    def _pg_conn(self):
+        return psycopg.connect(self.database_url)
+
+    def _execute(self, query: str, params: tuple = (), fetch: bool = False, many: bool = False):
+        if self.using_postgres:
+            with self._pg_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    if fetch:
+                        rows = cur.fetchall()
+                        cols = [d[0] for d in cur.description]
+                        return [dict(zip(cols, row)) for row in rows]
+                    conn.commit()
+                    return None
+        else:
+            cur = self.conn.cursor()
+            cur.execute(query, params)
+            if fetch:
+                rows = cur.fetchall()
+                return rows
+            self.conn.commit()
+            return None
+
+    def _execute_one(self, query: str, params: tuple = ()):
+        rows = self._execute(query, params, fetch=True)
+        if not rows:
+            return None
+        return rows[0]
+
+    def _create_schema_sqlite(self):
         cur = self.conn.cursor()
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS lancamentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                canal TEXT NOT NULL DEFAULT 'local',
+                usuario_id TEXT NOT NULL DEFAULT 'default_user',
+                chat_id TEXT NOT NULL DEFAULT 'default_chat',
                 data TEXT NOT NULL,
                 hora TEXT NOT NULL,
                 descricao TEXT NOT NULL,
@@ -226,59 +275,130 @@ class FinanceCore:
             )
         """)
 
+        self._ensure_sqlite_column("lancamentos", "canal", "TEXT NOT NULL DEFAULT 'local'")
+        self._ensure_sqlite_column("lancamentos", "usuario_id", "TEXT NOT NULL DEFAULT 'default_user'")
+        self._ensure_sqlite_column("lancamentos", "chat_id", "TEXT NOT NULL DEFAULT 'default_chat'")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lancamentos_user ON lancamentos(canal, usuario_id, chat_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_lancamentos_data ON lancamentos(data)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_lancamentos_categoria ON lancamentos(categoria)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_lancamentos_tipo ON lancamentos(tipo)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_lancamentos_descricao ON lancamentos(descricao)")
-
         self.conn.commit()
-        self.seed_default_categories()
 
-    def seed_default_categories(self):
+    def _ensure_sqlite_column(self, table: str, column: str, ddl: str):
         cur = self.conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in cur.fetchall()]
+        if column not in cols:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            self.conn.commit()
 
+    def _create_schema_postgres(self):
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS lancamentos (
+                id BIGSERIAL PRIMARY KEY,
+                canal TEXT NOT NULL DEFAULT 'local',
+                usuario_id TEXT NOT NULL DEFAULT 'default_user',
+                chat_id TEXT NOT NULL DEFAULT 'default_chat',
+                data TEXT NOT NULL,
+                hora TEXT NOT NULL,
+                descricao TEXT NOT NULL,
+                valor DOUBLE PRECISION NOT NULL,
+                tipo TEXT NOT NULL,
+                categoria TEXT NOT NULL,
+                mensagem_original TEXT,
+                data_hora_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS categorias (
+                id BIGSERIAL PRIMARY KEY,
+                nome TEXT NOT NULL UNIQUE,
+                palavras_chave TEXT,
+                criada_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_lancamentos_user ON lancamentos(canal, usuario_id, chat_id)",
+            "CREATE INDEX IF NOT EXISTS idx_lancamentos_data ON lancamentos(data)",
+            "CREATE INDEX IF NOT EXISTS idx_lancamentos_categoria ON lancamentos(categoria)",
+            "CREATE INDEX IF NOT EXISTS idx_lancamentos_tipo ON lancamentos(tipo)",
+            "CREATE INDEX IF NOT EXISTS idx_lancamentos_descricao ON lancamentos(descricao)",
+        ]
+        with self._pg_conn() as conn:
+            with conn.cursor() as cur:
+                for stmt in statements:
+                    cur.execute(stmt)
+            conn.commit()
+
+    # =========================================================
+    # utils
+    # =========================================================
+    def normalize_text(self, text):
+        if text is None:
+            return ""
+        text = str(text).strip().lower()
+        text = unicodedata.normalize("NFD", text)
+        text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
+    def format_date_br(self, dt):
+        return dt.strftime("%d/%m/%Y")
+
+    def period_debug_text(self, start_date, end_date):
+        return f"Período aplicado: {self.format_date_br(start_date)} a {self.format_date_br(end_date)}"
+
+    def user_key(self, user: UserContext) -> str:
+        return f"{user.canal}::{user.usuario_id}::{user.chat_id}"
+
+    # =========================================================
+    # categories
+    # =========================================================
+    def seed_default_categories(self):
         grouped = {}
         for keyword, category in self.default_categories.items():
             grouped.setdefault(category, set()).add(self.normalize_text(keyword))
 
         for categoria, palavras in grouped.items():
             palavras_str = ",".join(sorted(palavras))
-            cur.execute("SELECT id, palavras_chave FROM categorias WHERE nome = ?", (categoria,))
-            row = cur.fetchone()
+            row = self._execute_one("SELECT id, palavras_chave FROM categorias WHERE nome = %s" if self.using_postgres else "SELECT id, palavras_chave FROM categorias WHERE nome = ?", (categoria,))
 
             if row is None:
-                cur.execute(
-                    "INSERT INTO categorias (nome, palavras_chave) VALUES (?, ?)",
+                self._execute(
+                    "INSERT INTO categorias (nome, palavras_chave) VALUES (%s, %s)" if self.using_postgres else "INSERT INTO categorias (nome, palavras_chave) VALUES (?, ?)",
                     (categoria, palavras_str)
                 )
             else:
                 atuais = set()
-                if row["palavras_chave"]:
-                    atuais = {self.normalize_text(x) for x in row["palavras_chave"].split(",") if x.strip()}
+                palavras_existentes = row["palavras_chave"] if isinstance(row, dict) else row["palavras_chave"]
+                if palavras_existentes:
+                    atuais = {self.normalize_text(x) for x in palavras_existentes.split(",") if x.strip()}
                 novas = sorted(atuais.union(palavras))
-                cur.execute(
-                    "UPDATE categorias SET palavras_chave = ? WHERE nome = ?",
+                self._execute(
+                    "UPDATE categorias SET palavras_chave = %s WHERE nome = %s" if self.using_postgres else "UPDATE categorias SET palavras_chave = ? WHERE nome = ?",
                     (",".join(novas), categoria)
                 )
 
-        self.conn.commit()
-
     def load_category_maps(self):
-        cur = self.conn.cursor()
-        cur.execute("SELECT nome, palavras_chave FROM categorias ORDER BY nome")
-        rows = cur.fetchall()
+        rows = self._execute(
+            "SELECT nome, palavras_chave FROM categorias ORDER BY nome",
+            fetch=True
+        ) or []
 
         self.category_keywords_to_name = {}
         self.category_aliases = {}
 
         for row in rows:
-            nome = row["nome"]
+            nome = row["nome"] if isinstance(row, dict) else row["nome"]
             nome_norm = self.normalize_text(nome)
             self.category_aliases[nome_norm] = nome
 
+            palavras_raw = row["palavras_chave"] if isinstance(row, dict) else row["palavras_chave"]
             palavras = []
-            if row["palavras_chave"]:
-                palavras = [self.normalize_text(x) for x in row["palavras_chave"].split(",") if x.strip()]
+            if palavras_raw:
+                palavras = [self.normalize_text(x) for x in palavras_raw.split(",") if x.strip()]
 
             for p in palavras:
                 self.category_keywords_to_name[p] = nome
@@ -351,24 +471,22 @@ class FinanceCore:
         return CoreResponse(txt)
 
     # =========================================================
-    # categorias
+    # category commands
     # =========================================================
     def list_categories(self):
-        cur = self.conn.cursor()
-        cur.execute("SELECT nome, palavras_chave FROM categorias ORDER BY nome")
-        rows = cur.fetchall()
-
+        rows = self._execute("SELECT nome, palavras_chave FROM categorias ORDER BY nome", fetch=True) or []
         if not rows:
             return CoreResponse("Nenhuma categoria cadastrada.")
 
         txt = "🏷️ Categorias cadastradas:\n"
         for row in rows:
-            palavras = row["palavras_chave"] or ""
-            preview = ", ".join([x for x in palavras.split(",") if x][:6])
+            nome = row["nome"] if isinstance(row, dict) else row["nome"]
+            palavras = row["palavras_chave"] if isinstance(row, dict) else row["palavras_chave"]
+            preview = ", ".join([x for x in (palavras or "").split(",") if x][:6])
             if preview:
-                txt += f"• {row['nome']} -> {preview}\n"
+                txt += f"• {nome} -> {preview}\n"
             else:
-                txt += f"• {row['nome']}\n"
+                txt += f"• {nome}\n"
         return CoreResponse(txt)
 
     def create_category(self, nome, palavras_chave_raw=""):
@@ -380,33 +498,38 @@ class FinanceCore:
         if palavras_chave_raw:
             palavras = [self.normalize_text(x) for x in re.split(r"[;,]", palavras_chave_raw) if x.strip()]
 
-        cur = self.conn.cursor()
-        cur.execute("SELECT id FROM categorias WHERE lower(nome) = lower(?)", (nome,))
-        exists = cur.fetchone()
-        if exists:
+        row = self._execute_one(
+            "SELECT id FROM categorias WHERE lower(nome) = lower(%s)" if self.using_postgres else "SELECT id FROM categorias WHERE lower(nome) = lower(?)",
+            (nome,)
+        )
+        if row:
             return CoreResponse(f"A categoria '{nome}' já existe.")
 
-        cur.execute(
-            "INSERT INTO categorias (nome, palavras_chave) VALUES (?, ?)",
+        self._execute(
+            "INSERT INTO categorias (nome, palavras_chave) VALUES (%s, %s)" if self.using_postgres else "INSERT INTO categorias (nome, palavras_chave) VALUES (?, ?)",
             (nome, ",".join(palavras))
         )
-        self.conn.commit()
-
         self.load_category_maps()
+
         if palavras:
             return CoreResponse(f"✅ Categoria criada: {nome} | palavras-chave: {', '.join(palavras)}")
         return CoreResponse(f"✅ Categoria criada: {nome}")
 
     # =========================================================
-    # edição
+    # launch edit
     # =========================================================
-    def launch_exists(self, launch_id):
-        cur = self.conn.cursor()
-        cur.execute("SELECT * FROM lancamentos WHERE id = ?", (launch_id,))
-        return cur.fetchone()
+    def launch_exists(self, launch_id, user: UserContext):
+        return self._execute_one(
+            (
+                "SELECT * FROM lancamentos WHERE id = %s AND canal = %s AND usuario_id = %s AND chat_id = %s"
+                if self.using_postgres else
+                "SELECT * FROM lancamentos WHERE id = ? AND canal = ? AND usuario_id = ? AND chat_id = ?"
+            ),
+            (int(launch_id), user.canal, user.usuario_id, user.chat_id)
+        )
 
-    def edit_launch_value(self, launch_id, value):
-        row = self.launch_exists(int(launch_id))
+    def edit_launch_value(self, launch_id, value, user: UserContext):
+        row = self.launch_exists(int(launch_id), user)
         if not row:
             return CoreResponse(f"Lançamento #{launch_id} não encontrado.")
 
@@ -415,27 +538,32 @@ class FinanceCore:
         except ValueError:
             return CoreResponse("Valor inválido.")
 
-        cur = self.conn.cursor()
-        cur.execute("UPDATE lancamentos SET valor = ? WHERE id = ?", (val, launch_id))
-        self.conn.commit()
+        self._execute(
+            "UPDATE lancamentos SET valor = %s WHERE id = %s AND canal = %s AND usuario_id = %s AND chat_id = %s"
+            if self.using_postgres else
+            "UPDATE lancamentos SET valor = ? WHERE id = ? AND canal = ? AND usuario_id = ? AND chat_id = ?",
+            (val, int(launch_id), user.canal, user.usuario_id, user.chat_id)
+        )
         return CoreResponse(f"✅ Lançamento #{launch_id} atualizado: valor = R$ {val:.2f}")
 
-    def edit_launch_description(self, launch_id, description):
-        row = self.launch_exists(int(launch_id))
+    def edit_launch_description(self, launch_id, description, user: UserContext):
+        row = self.launch_exists(int(launch_id), user)
         if not row:
             return CoreResponse(f"Lançamento #{launch_id} não encontrado.")
-
         desc = description.strip()
         if not desc:
             return CoreResponse("Descrição inválida.")
 
-        cur = self.conn.cursor()
-        cur.execute("UPDATE lancamentos SET descricao = ? WHERE id = ?", (desc, launch_id))
-        self.conn.commit()
+        self._execute(
+            "UPDATE lancamentos SET descricao = %s WHERE id = %s AND canal = %s AND usuario_id = %s AND chat_id = %s"
+            if self.using_postgres else
+            "UPDATE lancamentos SET descricao = ? WHERE id = ? AND canal = ? AND usuario_id = ? AND chat_id = ?",
+            (desc, int(launch_id), user.canal, user.usuario_id, user.chat_id)
+        )
         return CoreResponse(f"✅ Lançamento #{launch_id} atualizado: descrição = {desc}")
 
-    def edit_launch_category(self, launch_id, category):
-        row = self.launch_exists(int(launch_id))
+    def edit_launch_category(self, launch_id, category, user: UserContext):
+        row = self.launch_exists(int(launch_id), user)
         if not row:
             return CoreResponse(f"Lançamento #{launch_id} não encontrado.")
 
@@ -449,13 +577,16 @@ class FinanceCore:
         if valid is None:
             return CoreResponse(f"Categoria '{category}' não existe. Use 'listar categorias'.")
 
-        cur = self.conn.cursor()
-        cur.execute("UPDATE lancamentos SET categoria = ? WHERE id = ?", (valid, launch_id))
-        self.conn.commit()
+        self._execute(
+            "UPDATE lancamentos SET categoria = %s WHERE id = %s AND canal = %s AND usuario_id = %s AND chat_id = %s"
+            if self.using_postgres else
+            "UPDATE lancamentos SET categoria = ? WHERE id = ? AND canal = ? AND usuario_id = ? AND chat_id = ?",
+            (valid, int(launch_id), user.canal, user.usuario_id, user.chat_id)
+        )
         return CoreResponse(f"✅ Lançamento #{launch_id} atualizado: categoria = {valid}")
 
-    def edit_launch_type(self, launch_id, launch_type):
-        row = self.launch_exists(int(launch_id))
+    def edit_launch_type(self, launch_id, launch_type, user: UserContext):
+        row = self.launch_exists(int(launch_id), user)
         if not row:
             return CoreResponse(f"Lançamento #{launch_id} não encontrado.")
 
@@ -463,28 +594,33 @@ class FinanceCore:
         if launch_type not in {"pago", "recebido"}:
             return CoreResponse("Tipo inválido. Use pago ou recebido.")
 
-        cur = self.conn.cursor()
-        cur.execute("UPDATE lancamentos SET tipo = ? WHERE id = ?", (launch_type, launch_id))
-        self.conn.commit()
+        self._execute(
+            "UPDATE lancamentos SET tipo = %s WHERE id = %s AND canal = %s AND usuario_id = %s AND chat_id = %s"
+            if self.using_postgres else
+            "UPDATE lancamentos SET tipo = ? WHERE id = ? AND canal = ? AND usuario_id = ? AND chat_id = ?",
+            (launch_type, int(launch_id), user.canal, user.usuario_id, user.chat_id)
+        )
         return CoreResponse(f"✅ Lançamento #{launch_id} atualizado: tipo = {launch_type}")
 
-    def edit_launch_date(self, launch_id, dt):
-        row = self.launch_exists(int(launch_id))
+    def edit_launch_date(self, launch_id, dt, user: UserContext):
+        row = self.launch_exists(int(launch_id), user)
         if not row:
             return CoreResponse(f"Lançamento #{launch_id} não encontrado.")
-
         try:
             datetime.strptime(dt, "%Y-%m-%d")
         except ValueError:
             return CoreResponse("Data inválida. Use YYYY-MM-DD.")
 
-        cur = self.conn.cursor()
-        cur.execute("UPDATE lancamentos SET data = ? WHERE id = ?", (dt, launch_id))
-        self.conn.commit()
+        self._execute(
+            "UPDATE lancamentos SET data = %s WHERE id = %s AND canal = %s AND usuario_id = %s AND chat_id = %s"
+            if self.using_postgres else
+            "UPDATE lancamentos SET data = ? WHERE id = ? AND canal = ? AND usuario_id = ? AND chat_id = ?",
+            (dt, int(launch_id), user.canal, user.usuario_id, user.chat_id)
+        )
         return CoreResponse(f"✅ Lançamento #{launch_id} atualizado: data = {dt}")
 
     # =========================================================
-    # parser
+    # parser helpers
     # =========================================================
     def looks_like_transaction(self, message):
         msg = self.normalize_text(message)
@@ -504,16 +640,12 @@ class FinanceCore:
         ]
         if any(re.search(p, message_norm) for p in query_patterns):
             return True
-
         if re.search(r"\b(gastos|despesas|receitas|recebimentos)\b", message_norm):
             return True
-
         if re.search(r"\bmes passado\b", message_norm):
             return True
-
         if re.search(r"\b(esse mes|este mes|hoje|ontem)\b", message_norm):
             return True
-
         if re.search(r"\b(?:dia\s+)?\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b", message_norm) and not self.looks_like_transaction(message_norm):
             return True
 
@@ -524,7 +656,6 @@ class FinanceCore:
         for palavra in ["transferencias", "transferencia", "pix", "outros", "saude", "mercado", "combustivel", "contas", "renda", "alimentacao", "transporte", "recebidos", "pagos"]:
             if re.search(rf"\b{palavra}\b", message_norm) and not self.looks_like_transaction(message_norm):
                 return True
-
         return False
 
     def detect_query_mode(self, message_norm):
@@ -556,7 +687,6 @@ class FinanceCore:
         m = re.search(r"\b(?:ultimos|últimos)\s+(\d{1,3})\s+dias\b", message_norm)
         if not m:
             return None
-
         qtd = int(m.group(1))
         if qtd < 1 or qtd > 365:
             return None
@@ -569,7 +699,6 @@ class FinanceCore:
         m = re.search(r"\b(?:ultimos|últimos)\s+(\d{1,2})\s+meses\b", message_norm)
         if not m:
             return None
-
         qtd = int(m.group(1))
         if qtd < 1 or qtd > 12:
             return None
@@ -581,20 +710,16 @@ class FinanceCore:
     def extract_last_week_period(self, message_norm):
         if "semana passada" not in message_norm:
             return None
-
         today = date.today()
         start_of_current_week = today - timedelta(days=today.weekday())
         start_of_last_week = start_of_current_week - timedelta(days=7)
         end_of_last_week = start_of_current_week - timedelta(days=1)
-
         return {"start_date": start_of_last_week, "end_date": end_of_last_week, "label": "semana passada"}
 
     def extract_year_period(self, message_norm):
         today = date.today()
-
         if re.search(r"\bdo ano\b", message_norm):
             return {"start_date": date(today.year, 1, 1), "end_date": date(today.year, 12, 31), "label": f"ano de {today.year}"}
-
         m = re.search(r"\bano\s+(\d{4})\b", message_norm)
         if m:
             ano = int(m.group(1))
@@ -614,32 +739,22 @@ class FinanceCore:
         ordinal_txt, mes_txt, ano_txt = m.groups()
         mes_num = self.meses[self.normalize_text(mes_txt)]
         ano = int(ano_txt) if ano_txt else date.today().year
-
         ultimo_dia_mes = calendar.monthrange(ano, mes_num)[1]
         ultimo_dia = date(ano, mes_num, ultimo_dia_mes)
         ordinal = self.ordinais_semana[self.normalize_text(ordinal_txt)]
 
         if ordinal == 99:
             start_day = max(1, ultimo_dia_mes - 6)
-            return {
-                "start_date": date(ano, mes_num, start_day),
-                "end_date": ultimo_dia,
-                "label": f"última semana de {self.meses_exibicao[mes_num]} de {ano}"
-            }
+            return {"start_date": date(ano, mes_num, start_day), "end_date": ultimo_dia, "label": f"última semana de {self.meses_exibicao[mes_num]} de {ano}"}
 
         start_day = 1 + (ordinal - 1) * 7
         if start_day > ultimo_dia_mes:
             return None
         end_day = min(start_day + 6, ultimo_dia_mes)
-        return {
-            "start_date": date(ano, mes_num, start_day),
-            "end_date": date(ano, mes_num, end_day),
-            "label": f"{ordinal_txt} semana de {self.meses_exibicao[mes_num]} de {ano}"
-        }
+        return {"start_date": date(ano, mes_num, start_day), "end_date": date(ano, mes_num, end_day), "label": f"{ordinal_txt} semana de {self.meses_exibicao[mes_num]} de {ano}"}
 
     def extract_range_period(self, message_norm):
         current_year = date.today().year
-
         pattern_numeric = (
             r"\b(?:de|entre|do dia)\s+(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?"
             r"\s+(?:a|ate|até|e)\s+"
@@ -653,11 +768,7 @@ class FinanceCore:
             if start_date and end_date:
                 if end_date < start_date:
                     start_date, end_date = end_date, start_date
-                return {
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "label": f"{start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
-                }
+                return {"start_date": start_date, "end_date": end_date, "label": f"{start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"}
         return None
 
     def extract_month_range_period(self, message_norm):
@@ -686,11 +797,7 @@ class FinanceCore:
         if end_date < start_date:
             start_date, end_date = end_date, start_date
 
-        return {
-            "start_date": start_date,
-            "end_date": end_date,
-            "label": f"{self.meses_exibicao[start_date.month]} de {start_date.year} até {self.meses_exibicao[end_date.month]} de {end_date.year}"
-        }
+        return {"start_date": start_date, "end_date": end_date, "label": f"{self.meses_exibicao[start_date.month]} de {start_date.year} até {self.meses_exibicao[end_date.month]} de {end_date.year}"}
 
     def extract_query_period(self, message_norm):
         today = date.today()
@@ -719,11 +826,7 @@ class FinanceCore:
                 ano_match = re.search(rf"\b{mes_norm}\s+de\s+(\d{{4}})\b", message_norm)
                 if ano_match:
                     ano = int(ano_match.group(1))
-                return {
-                    "start_date": date(ano, mes_num, 1),
-                    "end_date": date(ano, mes_num, calendar.monthrange(ano, mes_num)[1]),
-                    "label": f"{self.meses_exibicao[mes_num]} de {ano}"
-                }
+                return {"start_date": date(ano, mes_num, 1), "end_date": date(ano, mes_num, calendar.monthrange(ano, mes_num)[1]), "label": f"{self.meses_exibicao[mes_num]} de {ano}"}
 
         if "mes passado" in message_norm:
             first_day_this_month = today.replace(day=1)
@@ -760,11 +863,9 @@ class FinanceCore:
         for alias_norm, category in self.category_aliases.items():
             if re.search(rf"\b{re.escape(alias_norm)}\b", message_norm):
                 return category
-
         for keyword, category in self.category_keywords_to_name.items():
             if re.search(rf"\b{re.escape(keyword)}\b", message_norm):
                 return category
-
         return None
 
     def detect_query_type(self, message_norm):
@@ -787,7 +888,6 @@ class FinanceCore:
             "semana", "entre", "ate", "até", "a", "ultimos", "últimos", "dias", "meses", "ano",
             "buscar", "ajuda", "relatorio", "relatório", "exportar", "enviar", "pdf", "xml", "para",
         }
-
         for alias_norm in self.category_aliases.keys():
             termos_ignorar.add(alias_norm)
         for keyword in self.category_keywords_to_name.keys():
@@ -806,32 +906,34 @@ class FinanceCore:
         return None
 
     # =========================================================
-    # queries
+    # user filtered queries
     # =========================================================
-    def fetch_query_rows(self, start_date, end_date, categoria=None, tipo=None, termo_descricao=None):
-        query = "SELECT * FROM lancamentos WHERE date(data) BETWEEN ? AND ?"
-        params = [start_date.isoformat(), end_date.isoformat()]
+    def fetch_query_rows(self, user: UserContext, start_date, end_date, categoria=None, tipo=None, termo_descricao=None):
+        placeholder = "%s" if self.using_postgres else "?"
+        query = (
+            f"SELECT * FROM lancamentos "
+            f"WHERE canal = {placeholder} AND usuario_id = {placeholder} AND chat_id = {placeholder} "
+            f"AND date(data) BETWEEN {placeholder} AND {placeholder}"
+        )
+        params: list[Any] = [user.canal, user.usuario_id, user.chat_id, start_date.isoformat(), end_date.isoformat()]
 
         if categoria:
-            query += " AND categoria = ?"
+            query += f" AND categoria = {placeholder}"
             params.append(categoria)
 
         if tipo:
-            query += " AND tipo = ?"
+            query += f" AND tipo = {placeholder}"
             params.append(tipo)
 
         if termo_descricao:
-            query += " AND lower(descricao) LIKE ?"
+            query += f" AND lower(descricao) LIKE {placeholder}"
             params.append(f"%{termo_descricao.lower()}%")
 
         query += " ORDER BY data DESC, hora DESC, id DESC"
+        return self._execute(query, tuple(params), fetch=True) or []
 
-        cur = self.conn.cursor()
-        cur.execute(query, params)
-        return cur.fetchall()
-
-    def execute_summary_query(self, start_date, end_date, categoria, tipo, periodo_label, termo_descricao=None):
-        resultados = self.fetch_query_rows(start_date, end_date, categoria, tipo, termo_descricao)
+    def execute_summary_query(self, user: UserContext, start_date, end_date, categoria, tipo, periodo_label, termo_descricao=None):
+        resultados = self.fetch_query_rows(user, start_date, end_date, categoria, tipo, termo_descricao)
 
         if not resultados:
             detalhe = []
@@ -841,21 +943,20 @@ class FinanceCore:
                 detalhe.append(f"tipo {tipo}")
             if termo_descricao:
                 detalhe.append(f"descrição contendo '{termo_descricao}'")
-
             complemento = f" com filtro de {' | '.join(detalhe)}" if detalhe else ""
             texto = f"Nenhum lançamento encontrado para {periodo_label}{complemento}."
             if self.show_period_debug:
                 texto += f"\n{self.period_debug_text(start_date, end_date)}"
             return CoreResponse(texto)
 
-        total_pago = sum(r["valor"] for r in resultados if r["tipo"] == "pago")
-        total_recebido = sum(r["valor"] for r in resultados if r["tipo"] == "recebido")
+        total_pago = sum(float(r["valor"]) for r in resultados if r["tipo"] == "pago")
+        total_recebido = sum(float(r["valor"]) for r in resultados if r["tipo"] == "recebido")
 
         categorias = {}
         for r in resultados:
             cat = r["categoria"]
             categorias.setdefault(cat, {"pago": 0.0, "recebido": 0.0})
-            categorias[cat][r["tipo"]] += r["valor"]
+            categorias[cat][r["tipo"]] += float(r["valor"])
 
         response = f"📊 Resumo {periodo_label}:\n"
         if self.show_period_debug:
@@ -873,8 +974,8 @@ class FinanceCore:
 
         return CoreResponse(response)
 
-    def execute_list_query(self, start_date, end_date, categoria, tipo, periodo_label, termo_descricao=None):
-        rows = self.fetch_query_rows(start_date, end_date, categoria, tipo, termo_descricao)
+    def execute_list_query(self, user: UserContext, start_date, end_date, categoria, tipo, periodo_label, termo_descricao=None):
+        rows = self.fetch_query_rows(user, start_date, end_date, categoria, tipo, termo_descricao)
 
         if not rows:
             detalhe = []
@@ -898,14 +999,14 @@ class FinanceCore:
         for row in rows[:30]:
             texto += (
                 f"#{row['id']} | {row['data']} | {row['descricao']} | "
-                f"R$ {row['valor']:.2f} | {row['tipo']} | {row['categoria']}\n"
+                f"R$ {float(row['valor']):.2f} | {row['tipo']} | {row['categoria']}\n"
             )
 
         if len(rows) > 30:
             texto += f"\n... e mais {len(rows) - 30} lançamento(s)."
 
-        total_pago = sum(r["valor"] for r in rows if r["tipo"] == "pago")
-        total_recebido = sum(r["valor"] for r in rows if r["tipo"] == "recebido")
+        total_pago = sum(float(r["valor"]) for r in rows if r["tipo"] == "pago")
+        total_recebido = sum(float(r["valor"]) for r in rows if r["tipo"] == "recebido")
 
         texto += "\n"
         texto += f"\nTotal pago: R$ {total_pago:.2f}"
@@ -915,7 +1016,7 @@ class FinanceCore:
         return CoreResponse(texto)
 
     # =========================================================
-    # lançamentos
+    # launches
     # =========================================================
     def extract_value(self, message):
         m = re.search(r"\b(?:r\$|rs)?\s*(\d+[.,]\d+|\d+)\s*(?:reais|r\$)?\b", message, re.IGNORECASE)
@@ -1015,31 +1116,36 @@ class FinanceCore:
             "mensagem_original": message
         }
 
-    def save_lancamento(self, lancamento):
+    def save_lancamento(self, user: UserContext, lancamento):
         try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                INSERT INTO lancamentos
-                (data, hora, descricao, valor, tipo, categoria, mensagem_original)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                lancamento["data"], lancamento["hora"], lancamento["descricao"],
-                lancamento["valor"], lancamento["tipo"], lancamento["categoria"],
-                lancamento["mensagem_original"]
-            ))
-            self.conn.commit()
+            self._execute(
+                (
+                    "INSERT INTO lancamentos "
+                    "(canal, usuario_id, chat_id, data, hora, descricao, valor, tipo, categoria, mensagem_original) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    if self.using_postgres else
+                    "INSERT INTO lancamentos "
+                    "(canal, usuario_id, chat_id, data, hora, descricao, valor, tipo, categoria, mensagem_original) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                ),
+                (
+                    user.canal, user.usuario_id, user.chat_id,
+                    lancamento["data"], lancamento["hora"], lancamento["descricao"],
+                    lancamento["valor"], lancamento["tipo"], lancamento["categoria"],
+                    lancamento["mensagem_original"]
+                )
+            )
             return True, None
         except Exception as e:
             return False, str(e)
 
     # =========================================================
-    # correções
+    # maintenance
     # =========================================================
     def description_looks_dirty(self, descricao):
         desc = self.normalize_text(descricao)
         if not desc or len(desc) <= 2:
             return True
-
         dirty_patterns = [r"/", r"\b(pagueide|gasteide|gasolinadia)\b", r"\bdia\b", r"^\bde\b", r"\bde$"]
         return any(re.search(pattern, desc) for pattern in dirty_patterns)
 
@@ -1057,7 +1163,6 @@ class FinanceCore:
         for termo in priority:
             if termo in texto_norm:
                 return termo
-
         return nova_descricao if nova_descricao else descricao_atual
 
     def recalculate_category_from_original(self, mensagem_original, descricao):
@@ -1066,14 +1171,14 @@ class FinanceCore:
 
     def auto_fix_dirty_records_on_startup(self):
         try:
-            cur = self.conn.cursor()
-            cur.execute("SELECT id, descricao, categoria, mensagem_original FROM lancamentos ORDER BY id ASC")
-            rows = cur.fetchall()
-
+            rows = self._execute(
+                "SELECT id, descricao, categoria, mensagem_original FROM lancamentos ORDER BY id ASC",
+                fetch=True
+            ) or []
             atualizados = 0
 
             for row in rows:
-                descricao_atual = row["descricao"] or ""
+                descricao_atual = row["descricao"]
                 mensagem_original = row["mensagem_original"] or ""
                 categoria_atual = row["categoria"] or "Outros"
 
@@ -1084,28 +1189,29 @@ class FinanceCore:
                 nova_categoria = self.recalculate_category_from_original(mensagem_original, nova_descricao)
 
                 if nova_descricao != descricao_atual or nova_categoria != categoria_atual:
-                    cur.execute(
+                    self._execute(
+                        "UPDATE lancamentos SET descricao = %s, categoria = %s WHERE id = %s"
+                        if self.using_postgres else
                         "UPDATE lancamentos SET descricao = ?, categoria = ? WHERE id = ?",
                         (nova_descricao, nova_categoria, row["id"])
                     )
                     atualizados += 1
-
-            self.conn.commit()
             return atualizados
         except Exception:
             return 0
 
     def run_manual_fix_dirty_records(self):
         try:
-            cur = self.conn.cursor()
-            cur.execute("SELECT id, descricao, categoria, mensagem_original FROM lancamentos ORDER BY id ASC")
-            rows = cur.fetchall()
+            rows = self._execute(
+                "SELECT id, descricao, categoria, mensagem_original FROM lancamentos ORDER BY id ASC",
+                fetch=True
+            ) or []
 
             atualizados = 0
             detalhes = []
 
             for row in rows:
-                descricao_atual = row["descricao"] or ""
+                descricao_atual = row["descricao"]
                 mensagem_original = row["mensagem_original"] or ""
                 categoria_atual = row["categoria"] or "Outros"
 
@@ -1113,14 +1219,14 @@ class FinanceCore:
                 nova_categoria = self.recalculate_category_from_original(mensagem_original, nova_descricao)
 
                 if nova_descricao != descricao_atual or nova_categoria != categoria_atual:
-                    cur.execute(
+                    self._execute(
+                        "UPDATE lancamentos SET descricao = %s, categoria = %s WHERE id = %s"
+                        if self.using_postgres else
                         "UPDATE lancamentos SET descricao = ?, categoria = ? WHERE id = ?",
                         (nova_descricao, nova_categoria, row["id"])
                     )
                     atualizados += 1
                     detalhes.append(f"#{row['id']}: '{descricao_atual}' -> '{nova_descricao}' | {categoria_atual} -> {nova_categoria}")
-
-            self.conn.commit()
 
             if atualizados == 0:
                 return CoreResponse("Nenhum lançamento precisou de correção.")
@@ -1134,53 +1240,64 @@ class FinanceCore:
         except Exception as e:
             return CoreResponse(f"Erro ao corrigir lançamentos: {e}")
 
-    def listar_ultimos_lancamentos(self):
+    def listar_ultimos_lancamentos(self, user: UserContext):
         try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                SELECT id, data, hora, descricao, valor, tipo, categoria
-                FROM lancamentos
-                ORDER BY id DESC
-                LIMIT 10
-            """)
-            rows = cur.fetchall()
+            rows = self._execute(
+                (
+                    "SELECT id, data, hora, descricao, valor, tipo, categoria "
+                    "FROM lancamentos WHERE canal = %s AND usuario_id = %s AND chat_id = %s "
+                    "ORDER BY id DESC LIMIT 10"
+                ) if self.using_postgres else (
+                    "SELECT id, data, hora, descricao, valor, tipo, categoria "
+                    "FROM lancamentos WHERE canal = ? AND usuario_id = ? AND chat_id = ? "
+                    "ORDER BY id DESC LIMIT 10"
+                ),
+                (user.canal, user.usuario_id, user.chat_id),
+                fetch=True
+            ) or []
 
             if not rows:
-                return CoreResponse("O banco está vazio. Nenhum lançamento encontrado.")
+                return CoreResponse("Seu histórico está vazio. Nenhum lançamento encontrado.")
 
             texto = "📁 Últimos lançamentos:\n"
             for row in rows:
                 texto += (
                     f"#{row['id']} | {row['data']} {row['hora']} | {row['descricao']} | "
-                    f"R$ {row['valor']:.2f} | {row['tipo']} | {row['categoria']}\n"
+                    f"R$ {float(row['valor']):.2f} | {row['tipo']} | {row['categoria']}\n"
                 )
-
             return CoreResponse(texto)
         except Exception as e:
             return CoreResponse(f"Erro ao listar lançamentos: {e}")
 
     # =========================================================
-    # relatórios/exportação/email
+    # reporting/export/email
     # =========================================================
-    def build_report_data(self, context=None):
+    def get_last_context(self, user: UserContext):
+        return self.last_query_context_by_user.get(self.user_key(user))
+
+    def set_last_context(self, user: UserContext, context: dict):
+        self.last_query_context_by_user[self.user_key(user)] = context
+
+    def build_report_data(self, user: UserContext, context=None):
         if context is None:
-            context = self.last_query_context
+            context = self.get_last_context(user)
 
         if not context:
             return None, "Nenhuma consulta anterior encontrada para exportar."
 
         rows = self.fetch_query_rows(
+            user,
             context["start_date"], context["end_date"],
             context.get("categoria"), context.get("tipo"), context.get("termo_descricao")
         )
 
-        total_pago = sum(r["valor"] for r in rows if r["tipo"] == "pago")
-        total_recebido = sum(r["valor"] for r in rows if r["tipo"] == "recebido")
+        total_pago = sum(float(r["valor"]) for r in rows if r["tipo"] == "pago")
+        total_recebido = sum(float(r["valor"]) for r in rows if r["tipo"] == "recebido")
 
         por_categoria = {}
         for r in rows:
             por_categoria.setdefault(r["categoria"], {"pago": 0.0, "recebido": 0.0})
-            por_categoria[r["categoria"]][r["tipo"]] += r["valor"]
+            por_categoria[r["categoria"]][r["tipo"]] += float(r["valor"])
 
         data = {
             "titulo": f"Relatório - {context['periodo_label']}",
@@ -1223,7 +1340,7 @@ class FinanceCore:
             SubElement(item, "data").text = row["data"]
             SubElement(item, "hora").text = row["hora"]
             SubElement(item, "descricao").text = row["descricao"]
-            SubElement(item, "valor").text = f"{row['valor']:.2f}"
+            SubElement(item, "valor").text = f"{float(row['valor']):.2f}"
             SubElement(item, "tipo").text = row["tipo"]
             SubElement(item, "categoria").text = row["categoria"]
 
@@ -1265,14 +1382,14 @@ class FinanceCore:
         for row in report_data["rows"]:
             draw_line(
                 f"#{row['id']} | {row['data']} | {row['descricao']} | "
-                f"R$ {row['valor']:.2f} | {row['tipo']} | {row['categoria']}"
+                f"R$ {float(row['valor']):.2f} | {row['tipo']} | {row['categoria']}"
             )
 
         c.save()
         return filepath
 
-    def export_last_context(self, filetype="pdf", kind="resumo"):
-        report_data, error = self.build_report_data()
+    def export_last_context(self, user: UserContext, filetype="pdf", kind="resumo"):
+        report_data, error = self.build_report_data(user)
         if error:
             return CoreResponse(error)
 
@@ -1283,11 +1400,7 @@ class FinanceCore:
             else:
                 path = self.save_report_pdf(report_data, prefix)
 
-            if kind == "resumo":
-                txt = f"✅ Resumo em {filetype.upper()} gerado."
-            else:
-                txt = f"✅ Relatório em {filetype.upper()} gerado."
-
+            txt = f"✅ {'Resumo' if kind == 'resumo' else 'Relatório'} em {filetype.upper()} gerado."
             return CoreResponse(txt, [path])
         except Exception as e:
             return CoreResponse(f"Erro ao exportar arquivo: {e}")
@@ -1319,25 +1432,22 @@ class FinanceCore:
             server.login(user, password)
             server.send_message(msg)
 
-    def try_export_or_email_command(self, message):
+    def try_export_or_email_command(self, user: UserContext, message):
         msg_norm = self.normalize_text(message)
 
         m_export = re.match(r"^exportar\s+(resumo|relatorio|relatório)\s+(pdf|xml)$", msg_norm)
         if m_export:
             kind = "resumo" if "resumo" in m_export.group(1) else "relatorio"
             filetype = m_export.group(2)
-            return self.export_last_context(filetype=filetype, kind=kind)
+            return self.export_last_context(user, filetype=filetype, kind=kind)
 
-        m_send = re.match(
-            r"^enviar\s+(resumo|relatorio|relatório)\s+(pdf|xml)\s+para\s+([^\s]+@[^\s]+)$",
-            msg_norm
-        )
+        m_send = re.match(r"^enviar\s+(resumo|relatorio|relatório)\s+(pdf|xml)\s+para\s+([^\s]+@[^\s]+)$", msg_norm)
         if m_send:
             kind = "resumo" if "resumo" in m_send.group(1) else "relatorio"
             filetype = m_send.group(2)
             to_email = m_send.group(3)
 
-            exported = self.export_last_context(filetype=filetype, kind=kind)
+            exported = self.export_last_context(user, filetype=filetype, kind=kind)
             if not exported.file_paths:
                 return exported
 
@@ -1352,9 +1462,8 @@ class FinanceCore:
 
         return None
 
-    def try_report_command(self, message):
+    def try_report_command(self, user: UserContext, message):
         msg_norm = self.normalize_text(message)
-
         if not re.search(r"\b(relatorio|relatório)\b", msg_norm):
             return None
 
@@ -1378,9 +1487,9 @@ class FinanceCore:
             "source_message": message,
             "kind": "relatorio",
         }
-        self.last_query_context = context
+        self.set_last_context(user, context)
 
-        report_data, error = self.build_report_data(context)
+        report_data, error = self.build_report_data(user, context)
         if error:
             return CoreResponse(error)
 
@@ -1401,16 +1510,17 @@ class FinanceCore:
             for row in report_data["rows"][:10]:
                 txt += (
                     f"#{row['id']} | {row['data']} | {row['descricao']} | "
-                    f"R$ {row['valor']:.2f} | {row['tipo']} | {row['categoria']}\n"
+                    f"R$ {float(row['valor']):.2f} | {row['tipo']} | {row['categoria']}\n"
                 )
 
         txt += "\nUse 'exportar relatorio pdf' ou 'exportar relatorio xml' para salvar."
         return CoreResponse(txt)
 
     # =========================================================
-    # processador principal
+    # main processor
     # =========================================================
-    def process_message(self, message: str) -> CoreResponse:
+    def process_message(self, message: str, user: Optional[UserContext] = None) -> CoreResponse:
+        user = user or UserContext()
         message_norm = self.normalize_text(message)
 
         if message_norm == "ajuda":
@@ -1443,14 +1553,14 @@ class FinanceCore:
         for pattern, handler in patterns:
             m = re.match(pattern, message, re.IGNORECASE)
             if m:
-                return handler(*m.groups())
+                return handler(*m.groups(), user)
 
-        export_response = self.try_export_or_email_command(message)
+        export_response = self.try_export_or_email_command(user, message)
         if export_response is not None:
             return export_response
 
         if message_norm == "listar ultimos":
-            return self.listar_ultimos_lancamentos()
+            return self.listar_ultimos_lancamentos(user)
 
         if message_norm == "corrigir lancamentos":
             return self.run_manual_fix_dirty_records()
@@ -1463,14 +1573,14 @@ class FinanceCore:
             self.show_period_debug = False
             return CoreResponse("Debug de período desativado.")
 
-        report_response = self.try_report_command(message)
+        report_response = self.try_report_command(user, message)
         if report_response is not None:
             return report_response
 
         if self.looks_like_transaction(message):
             lancamento = self.extract_lancamento(message)
             if lancamento:
-                ok, erro = self.save_lancamento(lancamento)
+                ok, erro = self.save_lancamento(user, lancamento)
                 if ok:
                     return CoreResponse(
                         f"✅ Lançamento salvo: {lancamento['descricao']} - "
@@ -1486,7 +1596,7 @@ class FinanceCore:
             tipo = self.detect_query_type(message_norm)
             termo_descricao = self.detect_query_description_term(message_norm, query_mode)
 
-            self.last_query_context = {
+            context = {
                 "mode": query_mode,
                 "start_date": periodo_info["start_date"],
                 "end_date": periodo_info["end_date"],
@@ -1497,17 +1607,12 @@ class FinanceCore:
                 "source_message": message,
                 "kind": "summary" if query_mode == "summary" else "list",
             }
+            self.set_last_context(user, context)
 
             if query_mode == "list":
-                return self.execute_list_query(
-                    periodo_info["start_date"], periodo_info["end_date"],
-                    categoria, tipo, periodo_info["label"], termo_descricao
-                )
+                return self.execute_list_query(user, periodo_info["start_date"], periodo_info["end_date"], categoria, tipo, periodo_info["label"], termo_descricao)
 
-            return self.execute_summary_query(
-                periodo_info["start_date"], periodo_info["end_date"],
-                categoria, tipo, periodo_info["label"], termo_descricao
-            )
+            return self.execute_summary_query(user, periodo_info["start_date"], periodo_info["end_date"], categoria, tipo, periodo_info["label"], termo_descricao)
 
         return CoreResponse("Não foi possível interpretar a mensagem. Digite 'ajuda' para ver os comandos.")
 
