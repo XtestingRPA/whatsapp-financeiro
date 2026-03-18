@@ -13,7 +13,7 @@ class TelegramFinanceBridge:
         if normalized in {"/start", "start"}:
             return CoreResponse(
                 text=(
-                    "💰 WhatsApp Financeiro no Telegram iniciado.\n\n"
+                    "💰 FinancesXTG iniciado no Telegram.\n\n"
                     "Exemplos:\n"
                     "• Paguei 35 de gasolina hoje\n"
                     "• Resumo março\n"
